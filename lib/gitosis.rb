@@ -2,6 +2,8 @@ require 'lockfile'
 require 'inifile'
 require 'net/ssh'
 require 'tmpdir'
+require 'gitoliteconffile'
+require 'gitoliteconfperms'
 
 module Gitosis
   def self.renderReadOnlyUrls(baseUrlStr, projectId)
@@ -10,7 +12,7 @@ module Gitosis
       return rendered
     end
     
-    baseUrlList = baseUrlStr.split("%p")
+    baseUrlList = baseUrlStr.split(/[\r\n\t ,;]+/)
     if (not defined?(baseUrlList.length))
       return rendered
     end
@@ -38,17 +40,17 @@ module Gitosis
 
 
 		rendered = rendered + "<strong>" + (isReadOnly ? "Read Only" : "Developer") + " " + (baseUrlList.length == 1 ? "URL" : "URLs") + ": </strong><br/>"
-				rendered = rendered + "<ul>";
-				for baseUrl in baseUrlList do
-						rendered = rendered + "<li>" + "<span style=\"width: 95%; font-size:10px\">" + baseUrl + projectId + ".git</span></li>"
-				end
+    rendered = rendered + "<ul>";
+    for baseUrl in baseUrlList do
+      rendered = rendered + "<li>" + "<span style=\"width: 95%; font-size:10px\">" + baseUrl + projectId + ".git</span></li>"
+    end
 		rendered = rendered + "</ul>\n"
 		return rendered
 	end 
 
-	def self.update_repositories(projects)
-		projects = (projects.is_a?(Array) ? projects : [projects])
-	
+	def self.update_repositories(projects)		projects = (projects.is_a?(Array) ? projects : [projects])
+
+
 		if(defined?(@recursionCheck))
 			if(@recursionCheck)
 				return
@@ -83,7 +85,7 @@ module Gitosis
 		ENV['GIT_SSH'] = ssh_with_identity_file
 		
 		# clone repo
-		`env GIT_SSH=#{ssh_with_identity_file} git clone #{Setting.plugin_redmine_gitosis['gitosisUrl']} #{local_dir}/gitosis`
+		`env GIT_SSH=#{ssh_with_identity_file} git clone #{Setting.plugin_redmine_gitosis['gitosisUrl']} #{local_dir}/gitolite-admin`
 
 		changed = false
 	
@@ -92,48 +94,47 @@ module Gitosis
 			users = project.member_principals.map(&:user).compact.uniq
 			write_users = users.select{ |user| user.allowed_to?( :commit_access, project ) }
 			read_users = users.select{ |user| user.allowed_to?( :view_changesets, project ) && !user.allowed_to?( :commit_access, project ) }
-	
+
 			# write key files
 			users.map{|u| u.gitosis_public_keys.active}.flatten.compact.uniq.each do |key|
-				File.open(File.join(local_dir, 'gitosis/keydir',"#{key.identifier}.pub"), 'w') {|f| f.write(key.key.gsub(/\n/,'')) }
+				File.open(File.join(local_dir, 'gitolite-admin/keydir',"#{key.identifier}.pub"), 'w') {|f| f.write(key.key.gsub(/\n/,'')) }
 			end
 
 			# delete inactives
 			users.map{|u| u.gitosis_public_keys.inactive}.flatten.compact.uniq.each do |key|
-				File.unlink(File.join(local_dir, 'gitosis/keydir',"#{key.identifier}.pub")) rescue nil
+				File.unlink(File.join(local_dir, 'gitolite-admin/keydir',"#{key.identifier}.pub")) rescue nil
 			end
-	
+
 			# write config file
-			conf = IniFile.new(File.join(local_dir,'gitosis','gitosis.conf'))
-			original = conf.clone
+			conf = GitoliteConfFile.new(File.join(local_dir,'gitolite-admin/conf/','gitolite.conf'))
+			conf.parse
 			name = "#{project.identifier}"
 			
-			conf["group #{name}_readonly"]['readonly'] = name
-			conf["group #{name}_readonly"]['members'] = read_users.map{|u| u.gitosis_public_keys.active}.flatten.map{ |key| "#{key.identifier}" }.join(' ')
-	
-			conf["group #{name}"]['writable'] = name
-			conf["group #{name}"]['members'] = write_users.map{|u| u.gitosis_public_keys.active}.flatten.map{ |key| "#{key.identifier}" }.join(' ')
-
+      if not read_users.empty?
+        conf[name]['R'] = read_users.map{|u| u.gitosis_public_keys.active}.flatten.map{ |key| "#{key.identifier}" }.join(' ')
+      end
+			conf[name]['RW'] = write_users.map{|u| u.gitosis_public_keys.active}.flatten.map{ |key| "#{key.identifier}" }.join(' ')
 			# git-daemon support for read-only anonymous access
-			if User.anonymous.allowed_to?( :view_changesets, project )
-				conf["repo #{name}"]['daemon'] = 'yes'
-			else
-				conf["repo #{name}"]['daemon'] = 'no'
-			end
+			#if User.anonymous.allowed_to?( :view_changesets, project )
+			#	conf["repo #{name}"]['daemon'] = 'yes'
+			#else
+			#	conf["repo #{name}"]['daemon'] = 'no'
+			#end
 
-			unless conf.eql?(original)
-				conf.write 
-				changed = true
-			end
+			#unless conf.eql?(original)
+
+			conf.create 
+			changed = true
+			#end
 
 		end
 		if changed
 			# add, commit, push, and remove local tmp dir
-			`cd #{File.join(local_dir,'gitosis')} ; git add keydir/* gitosis.conf`
-			`cd #{File.join(local_dir,'gitosis')} ; git config user.email '#{Setting.mail_from}'`
-			`cd #{File.join(local_dir,'gitosis')} ; git config user.name 'Redmine'`
-			`cd #{File.join(local_dir,'gitosis')} ; git commit -a -m 'updated by Redmine Gitosis'`
-			`cd #{File.join(local_dir,'gitosis')} ; git push`
+			`cd #{File.join(local_dir,'gitolite-admin')} ; git add keydir/* conf/gitolite.conf`
+			`cd #{File.join(local_dir,'gitolite-admin')} ; git config user.email '#{Setting.mail_from}'`
+			`cd #{File.join(local_dir,'gitolite-admin')} ; git config user.name 'Redmine'`
+			`cd #{File.join(local_dir,'gitolite-admin')} ; git commit -a -m 'updated by Redmine Gitosis'`
+			`cd #{File.join(local_dir,'gitolite-admin')} ; git push`
 		end
 		
 		# remove local copy
